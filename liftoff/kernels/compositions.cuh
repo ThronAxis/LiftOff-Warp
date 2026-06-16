@@ -6,28 +6,14 @@
 #include "../primitives/scan.cuh"
 #include "../primitives/topk.cuh"
 #include "../primitives/intrinsics.cuh"
-#include "../core/types.cuh"
+#include "attention_reduce.cuh"
 
 namespace liftoff {
 
 // ═══════════ Recipe 1: Online Softmax (Flash Attention style) ═══════════
-// One-pass softmax without materializing full attention matrix
+// Uses warp_online_softmax_update() and warp_merge_online_softmax()
+// defined in attention_reduce.cuh
 
-__device__ void warp_online_softmax_update(float& m, float& l, float x) {
-    float m_new = fmaxf(m, x);
-    l = l * __expf(m - m_new) + __expf(x - m_new);
-    m = m_new;
-}
-
-__device__ void warp_merge_online_softmax(float& m, float& l) {
-    for (int delta = 16; delta >= 1; delta >>= 1) {
-        float m2 = shfl_xor(m, delta);
-        float l2 = shfl_xor(l, delta);
-        float m_new = fmaxf(m, m2);
-        l = l * __expf(m - m_new) + l2 * __expf(m2 - m_new);
-        m = m_new;
-    }
-}
 
 // ═══════════ Recipe 2: Warp Histogram via match_any ═══════════
 __device__ void warp_histogram_recipe(
