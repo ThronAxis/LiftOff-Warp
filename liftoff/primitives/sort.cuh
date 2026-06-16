@@ -14,7 +14,6 @@ __device__ __forceinline__ void warp_sort_ascending(T& val, unsigned mask = FULL
 
     #define BITONIC_STEP(stride, dir_bit)                               \
     {                                                                    \
-        int partner = lid ^ stride;                                      \
         T   other   = shfl_xor(val, stride, mask);                      \
         bool hi     = (lid & (stride << 1)) != 0;                       \
         bool want_swap = hi ? (val > other) : (val < other);            \

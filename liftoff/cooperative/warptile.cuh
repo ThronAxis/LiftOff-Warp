@@ -18,9 +18,8 @@ struct WarpTile {
 
     cg::thread_block_tile<TileSize> group;
 
-    __device__ WarpTile() {
-        group = cg::tiled_partition<TileSize>(cg::this_thread_block());
-    }
+    __device__ WarpTile()
+        : group(cg::tiled_partition<TileSize>(cg::this_thread_block())) {}
 
     __device__ int lane()  { return group.thread_rank(); }
     __device__ int size()  { return TileSize; }
