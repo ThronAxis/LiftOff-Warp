@@ -14,7 +14,7 @@
 LIFTOFF is a **zero-dependency, header-only CUDA C++ library** that eliminates shared memory (`__shared__`) as the default intra-warp communication medium. It replaces shared memory entirely with:
 
 - **Warp Shuffle Intrinsics** (`__shfl_sync`, `__shfl_xor_sync`, `__shfl_up_sync`, `__shfl_down_sync`)
-- **Warp Ballot Intrinsics** (`__ballot_sync`, `__any_sync`, `__all_sync`)
+- **Warp Ballot Intrinsics** (`__ballot_sync`, `__any_sync`, `__all_sync`, `__match_any_sync`)
 - **CUDA Cooperative Groups** (`cg::tiled_partition<N>`)
 
 The result: **lower latency, higher occupancy, zero bank conflicts, and extreme composability**.
@@ -38,37 +38,32 @@ liftoff/
 │   └── profile.cuh         ← CUDA Event timing, NVTX, error checking
 ├── primitives/
 │   ├── intrinsics.cuh      ← Safe shuffle/ballot wrappers (Module 1)
-│   ├── reduce.cuh          ← Warp reduce: sum, max, min, argmax (Module 2)
-│   ├── scan.cuh            ← Warp scan: inclusive, exclusive (Module 3)
-│   ├── ballot.cuh          ← Ballot: popcount, leader, compaction (Module 4)
-│   ├── broadcast.cuh       ← Broadcast, rotate, reverse, zip (Module 5)
-│   ├── sort.cuh            ← Bitonic sort in registers (Module 6)
-│   └── topk.cuh            ← Top-K selection (Module 7)
+│   ├── reduce.cuh          ← Warp reduce: sum, max, min, argmax, half2 (Module 2)
+│   ├── scan.cuh            ← Warp scan: inclusive, exclusive, generic (Module 3)
+│   ├── ballot.cuh          ← Ballot: popcount, leader, compaction, elect (Module 4)
+│   ├── broadcast.cuh       ← Broadcast, rotate, reverse, transpose, zip (Module 5)
+│   ├── sort.cuh            ← Bitonic sort, odd-even sort, KV pairs (Module 6)
+│   └── topk.cuh            ← Top-K, bottom-K, streaming buffer (Module 7)
 ├── cooperative/
-│   └── warptile.cuh        ← WarpTile<N> via cooperative groups (Module 8)
+│   └── warptile.cuh        ← WarpTile<N> with sort, scan, reduce (Module 8)
 ├── kernels/
 │   ├── softmax.cuh         ← Warp softmax (zero shared mem)
 │   ├── layernorm.cuh       ← Warp LayerNorm
 │   ├── topk_sampling.cuh   ← Fused softmax + top-K + RMS Norm
-│   ├── attention_reduce.cuh← Attention score reduction
-│   └── dot_product.cuh     ← Batched dot product
+│   ├── attention_reduce.cuh← Attention Q·K^T/√d + online softmax
+│   ├── dot_product.cuh     ← Batched dot product
+│   ├── gelu_reduce.cuh     ← GELU activation + fused reduce
+│   ├── histogram.cuh       ← Warp histogram via ballot
+│   └── compositions.cuh    ← Fused recipes: LN+GELU, stream compact
 ├── bench/
 │   ├── benchmark.cuh       ← Timing harness, CSV writer
-│   └── benchmark_main.cu   ← Main benchmark runner
+│   └── benchmark_main.cu   ← 10 benchmarks + occupancy analysis
 ├── tests/
-│   └── correctness.cu      ← CPU reference validation
+│   └── correctness.cu      ← 22+ tests: edge cases, WarpTile, argmax
 └── liftoff.cuh             ← Single-header include-all
 ```
 
 ## Quick Start (Kaggle)
-
-```python
-# 1. Upload the liftoff/ directory to Kaggle
-# 2. Run the driver script:
-!python kaggle_driver.py
-```
-
-Or build manually:
 
 ```bash
 # Build correctness tests
@@ -82,76 +77,32 @@ nvcc -O3 -arch=sm_75 --use_fast_math -std=c++17 \
 ./liftoff_bench
 ```
 
+Or use the Python driver: `python kaggle_driver.py`
+
 ## Module Overview
 
-### Module 1: Intrinsic Wrappers (`intrinsics.cuh`)
-Type-safe wrappers over raw CUDA shuffle/ballot intrinsics with 64-bit double support.
-
-### Module 2: Warp Reduce (`reduce.cuh`)
-Butterfly XOR pattern reductions — 5 shuffle rounds for 32 threads:
-```cuda
-float sum = warp_reduce_sum(val);     // All lanes get the sum
-float mx  = warp_reduce_max(val);     // All lanes get the max
-```
-
-### Module 3: Warp Scan (`scan.cuh`)
-Kogge-Stone prefix scan via `__shfl_up_sync`:
-```cuda
-float prefix = warp_scan_inclusive(val);   // Lane k = sum(input[0..k])
-float excl   = warp_scan_exclusive(val);  // Lane k = sum(input[0..k-1])
-```
-
-### Module 4: Ballot Utilities (`ballot.cuh`)
-Warp-wide predicate operations:
-```cuda
-int count  = warp_popcount(pred);         // How many lanes are true
-int leader = warp_leader_lane(pred);      // Lowest true lane
-int rank   = warp_my_rank(pred);          // My rank among true lanes
-```
-
-### Module 5: Broadcast & Exchange (`broadcast.cuh`)
-Register-to-register data movement:
-```cuda
-float bc  = warp_broadcast(val, src_lane);  // All lanes get src's value
-float rot = warp_rotate_up(val, delta);     // Cyclic rotation
-float rev = warp_reverse(val);              // Lane 0↔31, 1↔30, ...
-```
-
-### Module 6: Bitonic Sort (`sort.cuh`)
-32-element sort entirely in registers — 15 shuffle rounds:
-```cuda
-warp_sort_ascending(val);                   // Sort 32 values across warp
-warp_sort_pairs_ascending(key, val);        // Key-value pair sort
-```
-
-### Module 7: Top-K (`topk.cuh`)
-Register-only top-K selection for K ≤ 32:
-```cuda
-warp_topk<float, 8>(val, idx, out_vals, out_idxs);  // Top-8
-unsigned mask = warp_topk_mask(val, k);               // Which lanes are top-K
-```
-
-### Module 8: WarpTile (`warptile.cuh`)
-Sub-warp cooperative group abstraction:
-```cuda
-WarpTile<8> tile;                           // 8-thread tile (4 tiles per warp)
-float sum = tile.reduce_sum(val);           // Reduce within 8-thread group
-float bc  = tile.broadcast(val, 0);         // Broadcast within tile
-```
+| Module | Header | Key Functions |
+|---|---|---|
+| **1. Intrinsics** | `intrinsics.cuh` | `shfl_down`, `shfl_xor`, `shfl_idx`, `ballot`, `match_any` |
+| **2. Reduce** | `reduce.cuh` | `warp_reduce_sum/max/min/prod`, `warp_reduce_argmax`, `half2` |
+| **3. Scan** | `scan.cuh` | `warp_scan_inclusive/exclusive`, generic op scan |
+| **4. Ballot** | `ballot.cuh` | `warp_popcount`, `warp_leader_lane`, `warp_my_rank`, `warp_elect_one` |
+| **5. Broadcast** | `broadcast.cuh` | `warp_broadcast`, `warp_rotate`, `warp_reverse`, `warp_zip` |
+| **6. Sort** | `sort.cuh` | `warp_sort_ascending`, `warp_odd_even_sort`, KV pair sort |
+| **7. Top-K** | `topk.cuh` | `warp_topk`, `warp_bottom_k`, `warp_topk_with_indices` |
+| **8. WarpTile** | `warptile.cuh` | `WarpTile<N>` with `reduce_sum/max/min`, `sort`, `scan`, `barrier` |
+| **9. ML Kernels** | `kernels/*.cuh` | Softmax, LayerNorm, Attention, Dot Product, RMS Norm, GELU, Histogram |
 
 ## Target Hardware
 
 | GPU | SM | Status |
 |---|---|---|
-| Tesla T4 | 7.5 (Turing) | ✅ Primary target |
+| Tesla T4 | 7.5 (Turing) | ✅ Primary |
 | Tesla P100 | 6.0 (Pascal) | ✅ Supported |
 | A100 | 8.0 (Ampere) | ✅ Extended |
 
 ## Author
 
-**Maaran** — ML Systems Engineering Research  
-GIET MTech CSE 2026–2028
-
----
+**Maaran** — ML Systems Engineering Research | GIET MTech CSE 2026–2028
 
 *LIFTOFF v1.0 — Antigravity GPU Systems*
