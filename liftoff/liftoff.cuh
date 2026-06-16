@@ -29,4 +29,5 @@
 #include "kernels/attention_reduce.cuh"
 #include "kernels/gelu_reduce.cuh"
 #include "kernels/histogram.cuh"
+#include "kernels/compositions.cuh"
 
