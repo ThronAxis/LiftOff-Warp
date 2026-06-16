@@ -75,4 +75,49 @@ __device__ __forceinline__ void warp_sort_pairs_ascending(K& key, V& val, unsign
     #undef BITONIC_PAIR_STEP
 }
 
+// Odd-Even transposition sort (alternate network) — PRD requirement
+// Simpler than bitonic, O(N) rounds but lower code complexity
+template<typename T>
+__device__ __forceinline__ void warp_odd_even_sort(T& val, unsigned mask = FULL_MASK) {
+    int lid = lane_id();
+    
+    // N rounds of odd-even exchanges for N=32
+    #pragma unroll
+    for (int round = 0; round < WARP_SIZE; round++) {
+        // Even phase: compare (0,1), (2,3), (4,5)...
+        if ((round & 1) == 0) {
+            int partner = (lid & 1) ? lid - 1 : lid + 1;
+            if (partner >= 0 && partner < WARP_SIZE) {
+                T other = shfl_idx(val, partner, mask);
+                if (lid & 1) {
+                    val = (val > other) ? val : other;  // higher lane keeps max
+                } else {
+                    val = (val < other) ? val : other;  // lower lane keeps min
+                }
+            }
+        }
+        // Odd phase: compare (1,2), (3,4), (5,6)...
+        else {
+            int partner = (lid & 1) ? lid + 1 : lid - 1;
+            if (partner >= 0 && partner < WARP_SIZE) {
+                T other = shfl_idx(val, partner, mask);
+                if (lid & 1) {
+                    val = (val < other) ? val : other;  // lower position in pair keeps min
+                } else {
+                    val = (val > other) ? val : other;  // higher position keeps max
+                }
+            }
+        }
+    }
+}
+
+// Descending key-value pair sort
+template<typename K, typename V>
+__device__ __forceinline__ void warp_sort_pairs_descending(K& key, V& val, unsigned mask = FULL_MASK) {
+    warp_sort_pairs_ascending(key, val, mask);
+    // Reverse both key and value
+    key = warp_reverse(key, mask);
+    val = warp_reverse(val, mask);
+}
+
 } // namespace liftoff
