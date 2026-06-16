@@ -66,6 +66,48 @@ struct WarpTile {
     __device__ T shfl_xor(T val, int lane_mask) {
         return group.shfl_xor(val, lane_mask);
     }
+
+    // Sort values within the tile (bitonic network at tile granularity)
+    template<typename T>
+    __device__ void sort(T& val) {
+        int lid = lane();
+        // Bitonic sort for TileSize elements
+        for (int k = 2; k <= TileSize; k <<= 1) {
+            for (int j = k >> 1; j >= 1; j >>= 1) {
+                int partner_lane = lid ^ j;
+                T other = group.shfl(val, partner_lane);
+                bool ascending = ((lid & k) == 0);
+                bool want_swap = ascending ? (val > other && lid > partner_lane) ||
+                                             (val < other && lid < partner_lane)
+                                           : (val < other && lid > partner_lane) ||
+                                             (val > other && lid < partner_lane);
+                if (want_swap) val = other;
+            }
+        }
+    }
+
+    // Barrier — alias for sync()
+    __device__ void barrier() { group.sync(); }
+
+    // Reduce min within tile
+    template<typename T>
+    __device__ T reduce_min(T val) {
+        #pragma unroll
+        for (int offset = TileSize / 2; offset >= 1; offset >>= 1) {
+            T other = group.shfl_down(val, offset);
+            val = val < other ? val : other;
+        }
+        return val;
+    }
+
+    // Exclusive prefix sum within tile
+    template<typename T>
+    __device__ T scan_exclusive_sum(T val) {
+        T incl = scan_inclusive_sum(val);
+        T excl = group.shfl_up(incl, 1);
+        if (lane() == 0) excl = static_cast<T>(0);
+        return excl;
+    }
 };
 
 // Block reduce using WarpTile hierarchy (hybrid: shuffle + minimal shared)
