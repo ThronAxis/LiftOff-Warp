@@ -19,10 +19,13 @@ static int tests_failed = 0;
 // ═══════════ REDUCE TESTS ═══════════
 __global__ void test_reduce_kernel(float* in, float* s, float* mx, float* mn) {
     float val = in[threadIdx.x];
+    float rs  = warp_reduce_sum(val);
+    float rmx = warp_reduce_max(val);
+    float rmn = warp_reduce_min(val);
     if (lane_id() == 0) {
-        *s  = warp_reduce_sum(val);
-        *mx = warp_reduce_max(val);
-        *mn = warp_reduce_min(val);
+        *s  = rs;
+        *mx = rmx;
+        *mn = rmn;
     }
 }
 
