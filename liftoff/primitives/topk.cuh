@@ -78,9 +78,64 @@ struct WarpTopKBuffer {
     }
 
     __device__ void warp_merge(unsigned mask = FULL_MASK) {
-        // Simplified merge: parallel tournament tree via shuffles
-        // Full implementation for production use
+        // Tournament tree merge across warp:
+        // Each lane has its local top-K. We merge by shuffling and keeping
+        // the best K values across all candidates from pairs of lanes.
+        for (int delta = 1; delta < WARP_SIZE; delta <<= 1) {
+            // Receive partner's top-K values
+            #pragma unroll
+            for (int i = 0; i < K; i++) {
+                T partner_val   = shfl_xor(vals[i], delta, mask);
+                int partner_idx = shfl_xor(idxs[i], delta, mask);
+                insert(partner_val, partner_idx);
+            }
+        }
     }
 };
+
+// ─── WARP BOTTOM-K (K smallest values) ────────────────────────────────────────
+template<typename T, int K>
+__device__ __forceinline__ void warp_bottom_k(
+    T val, int orig_idx,
+    T* out_vals, int* out_idxs,
+    unsigned mask = FULL_MASK)
+{
+    static_assert(K <= WARP_SIZE, "K must be <= 32 for warp-level bottom-k");
+
+    warp_sort_pairs_ascending(val, orig_idx, mask);
+    // After ascending sort, lane 0 = min, lane 31 = max
+    // Bottom-K = lanes 0..(K-1)
+
+    int lid = lane_id();
+    if (lid == 0) {
+        #pragma unroll
+        for (int k = 0; k < K; k++) {
+            out_vals[k] = shfl_idx(val,      k, mask);
+            out_idxs[k] = shfl_idx(orig_idx, k, mask);
+        }
+    }
+}
+
+// ─── WARP TOP-K WITH INDICES (all lanes get results) ──────────────────────────
+template<typename T, int K>
+__device__ __forceinline__ void warp_topk_with_indices(
+    T val, int orig_idx,
+    T* out_vals, int* out_idxs,
+    unsigned mask = FULL_MASK)
+{
+    static_assert(K <= WARP_SIZE, "K must be <= 32");
+
+    T sorted_key = val;
+    int sorted_idx = orig_idx;
+    warp_sort_pairs_ascending(sorted_key, sorted_idx, mask);
+
+    // Broadcast K largest (from lanes WARP_SIZE-K .. WARP_SIZE-1) to ALL lanes
+    #pragma unroll
+    for (int k = 0; k < K; k++) {
+        int src_lane = WARP_SIZE - K + k;
+        out_vals[k] = shfl_idx(sorted_key, src_lane, mask);
+        out_idxs[k] = shfl_idx(sorted_idx, src_lane, mask);
+    }
+}
 
 } // namespace liftoff
