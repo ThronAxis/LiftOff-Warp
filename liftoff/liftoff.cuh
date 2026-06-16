@@ -27,3 +27,6 @@
 #include "kernels/topk_sampling.cuh"
 #include "kernels/dot_product.cuh"
 #include "kernels/attention_reduce.cuh"
+#include "kernels/gelu_reduce.cuh"
+#include "kernels/histogram.cuh"
+
