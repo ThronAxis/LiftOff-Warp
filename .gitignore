@@ -1,0 +1,26 @@
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.out
+*.ptx
+*.cubin
+*.fatbin
+liftoff_test
+liftoff_bench
+sweep
+sweep_bench.cu
+
+# Benchmark outputs
+*.csv
+*.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
