@@ -53,4 +53,39 @@ __device__ __forceinline__ T warp_unzip(T val, unsigned mask = FULL_MASK) {
     return shfl_idx(val, src, mask);
 }
 
+// ─── EXCHANGE UTILITIES ──────────────────────────────────────────────────────
+
+// Swap values between two specific lanes
+template<typename T>
+__device__ __forceinline__ T warp_swap(T val, int partner_lane, unsigned mask = FULL_MASK) {
+    return shfl_idx(val, partner_lane, mask);
+}
+
+// Exchange with adjacent lane (even↔odd)
+template<typename T>
+__device__ __forceinline__ T warp_exchange_adjacent(T val, unsigned mask = FULL_MASK) {
+    return shfl_xor(val, 1, mask);
+}
+
+// Gather: each lane reads from an index specified per-lane
+template<typename T>
+__device__ __forceinline__ T warp_gather(T val, int src_lane, unsigned mask = FULL_MASK) {
+    return shfl_idx(val, src_lane & (WARP_SIZE - 1), mask);
+}
+
+// Shift left (discard top, fill bottom with identity)
+template<typename T>
+__device__ __forceinline__ T warp_shift_left(T val, int delta, T fill = T(0), unsigned mask = FULL_MASK) {
+    T shifted = shfl_down(val, delta, mask);
+    return (lane_id() + delta < WARP_SIZE) ? shifted : fill;
+}
+
+// Shift right (discard bottom, fill top with identity)
+template<typename T>
+__device__ __forceinline__ T warp_shift_right(T val, int delta, T fill = T(0), unsigned mask = FULL_MASK) {
+    T shifted = shfl_up(val, delta, mask);
+    return (lane_id() >= delta) ? shifted : fill;
+}
+
 } // namespace liftoff
+
